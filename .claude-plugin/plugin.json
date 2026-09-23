@@ -1,0 +1,11 @@
+{
+  "name": "carebare47",
+  "version": "1.0.0",
+  "description": "Personal Claude Code skills. review-pr: read-only, multi-agent review of a GitHub pull request.",
+  "author": {
+    "name": "Tom Queen",
+    "url": "https://github.com/carebare47"
+  },
+  "repository": "https://github.com/carebare47/claude-skills",
+  "license": "MIT"
+}
