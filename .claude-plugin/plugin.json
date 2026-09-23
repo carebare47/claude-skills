@@ -1,6 +1,6 @@
 {
   "name": "carebare47",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Personal Claude Code skills. review-pr: read-only, multi-agent review of a GitHub pull request. resume-crashed-sessions: find and resume sessions after a crash.",
   "author": {
     "name": "Tom Queen",

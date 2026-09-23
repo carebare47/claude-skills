@@ -51,7 +51,7 @@ PULL_REQUEST_URL_PATTERN = re.compile(
 )
 
 PULL_REQUEST_METADATA_FIELDS = (
-    "url,title,body,baseRefName,headRefName,additions,deletions,files,commits"
+    "url,title,body,author,baseRefName,headRefName,additions,deletions,files,commits"
 )
 
 
@@ -150,7 +150,15 @@ def describe_author(node: dict) -> dict:
     return {"author": node["author"]["login"], "author_is_bot": node["author"]["__typename"] == "Bot"}
 
 
-def fetch_discussion(pull_request_location: dict[str, str]) -> dict:
+def is_resolved_by_author_without_reply(review_thread: dict, pull_request_author: str) -> bool:
+    thread_comment_authors = {comment["author"] for comment in review_thread["comments"]}
+    return (
+        review_thread["resolved_by"] == pull_request_author
+        and pull_request_author not in thread_comment_authors
+    )
+
+
+def fetch_discussion(pull_request_location: dict[str, str], pull_request_author: str) -> dict:
     review_threads = []
     for thread in fetch_all_connection_nodes(
         pull_request_location, "reviewThreads", REVIEW_THREAD_FIELDS
@@ -161,27 +169,29 @@ def fetch_discussion(pull_request_location: dict[str, str]) -> dict:
                 "fetching only some of them would misreport whether it was resolved."
             )
         thread_comments = thread["comments"]["nodes"]
-        review_threads.append(
-            {
-                "path": thread["path"],
-                "line": thread["line"],
-                "original_line": thread["originalLine"],
-                "diff_side": thread["diffSide"],
-                "is_resolved": thread["isResolved"],
-                "resolved_by": thread["resolvedBy"]["login"] if thread["resolvedBy"] else None,
-                "is_outdated": thread["isOutdated"],
-                "original_diff_hunk": thread_comments[0]["diffHunk"],
-                "comments": [
-                    {
-                        **describe_author(comment),
-                        "body": comment["body"],
-                        "created_at": comment["createdAt"],
-                        "url": comment["url"],
-                    }
-                    for comment in thread_comments
-                ],
-            }
+        review_thread = {
+            "path": thread["path"],
+            "line": thread["line"],
+            "original_line": thread["originalLine"],
+            "diff_side": thread["diffSide"],
+            "is_resolved": thread["isResolved"],
+            "resolved_by": thread["resolvedBy"]["login"] if thread["resolvedBy"] else None,
+            "is_outdated": thread["isOutdated"],
+            "original_diff_hunk": thread_comments[0]["diffHunk"],
+            "comments": [
+                {
+                    **describe_author(comment),
+                    "body": comment["body"],
+                    "created_at": comment["createdAt"],
+                    "url": comment["url"],
+                }
+                for comment in thread_comments
+            ],
+        }
+        review_thread["resolved_by_author_without_reply"] = is_resolved_by_author_without_reply(
+            review_thread, pull_request_author
         )
+        review_threads.append(review_thread)
     review_summaries = [
         {
             **describe_author(review),
@@ -205,6 +215,7 @@ def fetch_discussion(pull_request_location: dict[str, str]) -> dict:
         )
     ]
     return {
+        "pull_request_author": pull_request_author,
         "review_threads": review_threads,
         "review_summaries": review_summaries,
         "conversation_comments": conversation_comments,
@@ -336,7 +347,7 @@ def main() -> None:
     discussion_path = output_directory / "discussion.json"
     metadata_path.write_text(metadata_json)
     review_diff_path.write_text("".join(review_sections))
-    discussion = fetch_discussion(url_match.groupdict())
+    discussion = fetch_discussion(url_match.groupdict(), metadata["author"]["login"])
     discussion_path.write_text(json.dumps(discussion, indent=2))
 
     json.dump(
@@ -355,6 +366,9 @@ def main() -> None:
             "review_thread_count": len(discussion["review_threads"]),
             "unresolved_review_thread_count": sum(
                 not thread["is_resolved"] for thread in discussion["review_threads"]
+            ),
+            "resolved_by_author_without_reply_count": sum(
+                thread["resolved_by_author_without_reply"] for thread in discussion["review_threads"]
             ),
             "review_summary_count": len(discussion["review_summaries"]),
             "conversation_comment_count": len(discussion["conversation_comments"]),

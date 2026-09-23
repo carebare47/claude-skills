@@ -21,7 +21,7 @@ The script:
 - calls `gh` with `GH_TOKEN` removed, so `gh` uses its stored login. Prefix any other `gh` call in this review with `env -u GH_TOKEN`.
 - checks that the diff's line counts match the PR metadata, and exits non-zero if they don't.
 - writes a review diff that leaves out Unity editor-serialized files (`.prefab`, `.unity`, `.asset`, `.meta`, `.mat` and similar) plus any `--exclude` globs.
-- writes the PR discussion to a file: review threads with their resolved and outdated flags, review summaries, and conversation comments.
+- writes the PR discussion to a file: review threads with their resolved and outdated flags, review summaries, and conversation comments. Each thread also records who resolved it, and whether the PR author resolved someone else's thread without ever replying in it.
 - prints a JSON summary: base branch, head branch, head commit, the metadata, review diff and discussion paths, the excluded files, and how many threads and comments there are.
 
 If it fails on auth or network, fix that and rerun. If it reports a line-count mismatch, STOP and report it to the user. Never build the diff another way, e.g. with `git diff`.
@@ -117,6 +117,8 @@ Check whether earlier review feedback on this PR has been dealt with.
 
 PR discussion: {discussion_path}. It holds review threads with their
 resolved and outdated flags, review summaries and conversation comments.
+A thread's resolved_by_author_without_reply is true when the PR author
+resolved someone else's thread without ever replying in it.
 
 For every review thread, and every review summary or conversation comment
 that asks for a change or asks a question:
@@ -134,15 +136,22 @@ excluded files; list threads on them as not checked.
 
 ## Output
 Group by status. One line each: comment URL, file:line at head, what was
-asked in one sentence, and your evidence.
+asked in one sentence, and your evidence. For resolved threads, also say
+who resolved them.
 - Resolved but not addressed: marked resolved, but the code does not do
-  what was asked and no reply explains why. List these first.
+  what was asked and no reply explains why. List these first. Mark any
+  where resolved_by_author_without_reply is true.
+- Resolved by the author without a reply: resolved_by_author_without_reply
+  is true and the code does what was asked. The reviewer never got an
+  answer, so list these for them to confirm.
 - Open and not addressed.
 - Open but addressed: the thread can be marked resolved. This includes
   threads the commenter withdrew.
 - Needs a reply: a question or objection nobody answered.
+- Deferred: suggestions explicitly left for later work. Say whether a
+  ticket is linked.
 - Not checked: threads on excluded files.
-- Addressed: give the count only.
+- Addressed: the count of everything not listed above.
 ```
 
 ## 3. Verify before presenting
@@ -151,4 +160,4 @@ Check every Critical and Important finding, and every comment reported as not ad
 
 ## 4. Present
 
-Give the user one summary organised by category. Flag issues that several agents found independently. Put comment resolution in its own section, with resolved-but-not-addressed comments first. List the excluded files so the user knows they were not reviewed.
+Give the user one summary organised by category. Flag issues that several agents found independently. Put comment resolution in its own section: resolved-but-not-addressed comments first, then threads the author resolved without a reply. List the excluded files so the user knows they were not reviewed.
