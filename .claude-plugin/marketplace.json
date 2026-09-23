@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "carebare47",
-      "description": "Personal Claude Code skills. review-pr: read-only, multi-agent review of a GitHub pull request.",
+      "description": "Personal Claude Code skills. review-pr: read-only, multi-agent review of a GitHub pull request. resume-crashed-sessions: find and resume sessions after a crash.",
       "source": "./",
       "category": "development"
     }

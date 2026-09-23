@@ -14,14 +14,15 @@ The first argument is the PR URL, e.g. `https://github.com/org/repo/pull/123`. P
 ## 1. Fetch and verify the PR
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/fetch_pr_diff.py" "<PR_URL>" [--exclude GLOB ...] [--keep-editor-serialized]
+python3 "${CLAUDE_SKILL_DIR}/scripts/fetch_pr.py" "<PR_URL>" [--exclude GLOB ...] [--keep-editor-serialized]
 ```
 
 The script:
 - calls `gh` with `GH_TOKEN` removed, so `gh` uses its stored login. Prefix any other `gh` call in this review with `env -u GH_TOKEN`.
 - checks that the diff's line counts match the PR metadata, and exits non-zero if they don't.
 - writes a review diff that leaves out Unity editor-serialized files (`.prefab`, `.unity`, `.asset`, `.meta`, `.mat` and similar) plus any `--exclude` globs.
-- prints a JSON summary: base branch, head branch, head commit, metadata path, review diff path and the excluded files.
+- writes the PR discussion to a file: review threads with their resolved and outdated flags, review summaries, and conversation comments.
+- prints a JSON summary: base branch, head branch, head commit, the metadata, review diff and discussion paths, the excluded files, and how many threads and comments there are.
 
 If it fails on auth or network, fix that and rerun. If it reports a line-count mismatch, STOP and report it to the user. Never build the diff another way, e.g. with `git diff`.
 
@@ -39,6 +40,7 @@ Launch these in a single message with the Agent tool:
 - `pr-review-toolkit:type-design-analyzer`: type design, encapsulation and invariants. Skip it if the diff adds or changes no types.
 - `general-purpose` with the Senior Code Reviewer prompt below: plan alignment and overall quality
 - `general-purpose` with the Ponytail Reviewer prompt below: over-engineering
+- `general-purpose` with the Comment Resolution prompt below: whether earlier review feedback was dealt with. Skip it if the PR has no review threads, review summaries or conversation comments.
 
 Sub-agents do not share your shell, so write literal values from the JSON summary into every prompt, never shell variables. Every prompt must contain this block:
 
@@ -106,10 +108,47 @@ Output one line per finding in the skill's format, ending with
 `net: -<N> lines possible.` or `Lean already. Ship.`
 ```
 
+Comment Resolution prompt:
+
+```
+Check whether earlier review feedback on this PR has been dealt with.
+
+{the required block above}
+
+PR discussion: {discussion_path}. It holds review threads with their
+resolved and outdated flags, review summaries and conversation comments.
+
+For every review thread, and every review summary or conversation comment
+that asks for a change or asks a question:
+1. Work out what was asked, including anything agreed later in the thread.
+2. Find the code it refers to at the head commit. An outdated thread's line
+   has moved, so locate the code from its original_diff_hunk and path. A
+   thread with diff_side LEFT points at a base-side line, usually removed
+   code: report the code that replaced it, or say it was removed.
+3. Decide whether the head code does what was asked, or a reply gives a
+   sound reason not to.
+
+Ignore bot comments that only report status, such as CI or coverage. Treat
+bot comments that ask for a specific change like human ones. Do not open
+excluded files; list threads on them as not checked.
+
+## Output
+Group by status. One line each: comment URL, file:line at head, what was
+asked in one sentence, and your evidence.
+- Resolved but not addressed: marked resolved, but the code does not do
+  what was asked and no reply explains why. List these first.
+- Open and not addressed.
+- Open but addressed: the thread can be marked resolved. This includes
+  threads the commenter withdrew.
+- Needs a reply: a question or objection nobody answered.
+- Not checked: threads on excluded files.
+- Addressed: give the count only.
+```
+
 ## 3. Verify before presenting
 
-Check every Critical and Important finding against the review diff and the code at the head commit. Drop a finding if it is wrong, if it is about lines the PR did not change, or if it is about an excluded file. Say how many findings you dropped.
+Check every Critical and Important finding, and every comment reported as not addressed, against the review diff and the code at the head commit. Drop a finding if it is wrong, if it is about lines the PR did not change, or if it is about an excluded file. Say how many findings you dropped.
 
 ## 4. Present
 
-Give the user one summary organised by category. Flag issues that several agents found independently. List the excluded files so the user knows they were not reviewed.
+Give the user one summary organised by category. Flag issues that several agents found independently. Put comment resolution in its own section, with resolved-but-not-addressed comments first. List the excluded files so the user knows they were not reviewed.

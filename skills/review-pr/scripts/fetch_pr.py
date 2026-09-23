@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch a GitHub pull request's metadata and diff, check they agree, and write a review diff.
+"""Fetch a GitHub pull request's metadata, diff and discussion, and write a review diff.
 
 The review diff omits Unity editor-serialized files. Their YAML is rewritten wholesale by the
 editor on save, so reviewing it produces findings about serialization noise rather than code.
@@ -55,6 +55,40 @@ PULL_REQUEST_METADATA_FIELDS = (
 )
 
 
+PULL_REQUEST_CONNECTION_QUERY_TEMPLATE = """
+query($owner: String!, $repository: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repository) {
+    pullRequest(number: $number) {
+      CONNECTION_NAME(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { NODE_FIELDS }
+      }
+    }
+  }
+}
+"""
+
+AUTHOR_FIELDS = "author { login __typename }"
+
+REVIEW_THREAD_FIELDS = f"""
+isResolved
+isOutdated
+path
+line
+originalLine
+diffSide
+resolvedBy {{ login }}
+comments(first: 100) {{
+  pageInfo {{ hasNextPage }}
+  nodes {{ {AUTHOR_FIELDS} body createdAt url diffHunk }}
+}}
+"""
+
+REVIEW_FIELDS = f"{AUTHOR_FIELDS} state body submittedAt url"
+
+CONVERSATION_COMMENT_FIELDS = f"{AUTHOR_FIELDS} body createdAt url"
+
+
 class PullRequestFetchError(RuntimeError):
     pass
 
@@ -76,6 +110,105 @@ def run_gh_with_stored_login(gh_arguments: list[str]) -> str:
             f"{completed_process.returncode}:\n{completed_process.stderr.strip()}"
         )
     return completed_process.stdout
+
+
+def fetch_all_connection_nodes(
+    pull_request_location: dict[str, str], connection_name: str, node_fields: str
+) -> list[dict]:
+    query = PULL_REQUEST_CONNECTION_QUERY_TEMPLATE.replace(
+        "CONNECTION_NAME", connection_name
+    ).replace("NODE_FIELDS", node_fields)
+    nodes: list[dict] = []
+    page_cursor = None
+    while True:
+        gh_arguments = [
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={pull_request_location['owner']}",
+            "-f",
+            f"repository={pull_request_location['repository']}",
+            "-F",
+            f"number={pull_request_location['number']}",
+        ]
+        if page_cursor is not None:
+            gh_arguments += ["-f", f"cursor={page_cursor}"]
+        response = json.loads(run_gh_with_stored_login(gh_arguments))
+        connection = response["data"]["repository"]["pullRequest"][connection_name]
+        nodes.extend(connection["nodes"])
+        if not connection["pageInfo"]["hasNextPage"]:
+            return nodes
+        page_cursor = connection["pageInfo"]["endCursor"]
+
+
+def describe_author(node: dict) -> dict:
+    # GitHub returns a null author for deleted accounts and displays them as "ghost".
+    if node["author"] is None:
+        return {"author": "ghost", "author_is_bot": False}
+    return {"author": node["author"]["login"], "author_is_bot": node["author"]["__typename"] == "Bot"}
+
+
+def fetch_discussion(pull_request_location: dict[str, str]) -> dict:
+    review_threads = []
+    for thread in fetch_all_connection_nodes(
+        pull_request_location, "reviewThreads", REVIEW_THREAD_FIELDS
+    ):
+        if thread["comments"]["pageInfo"]["hasNextPage"]:
+            raise PullRequestFetchError(
+                f"A review thread on {thread['path']} has more than 100 comments; "
+                "fetching only some of them would misreport whether it was resolved."
+            )
+        thread_comments = thread["comments"]["nodes"]
+        review_threads.append(
+            {
+                "path": thread["path"],
+                "line": thread["line"],
+                "original_line": thread["originalLine"],
+                "diff_side": thread["diffSide"],
+                "is_resolved": thread["isResolved"],
+                "resolved_by": thread["resolvedBy"]["login"] if thread["resolvedBy"] else None,
+                "is_outdated": thread["isOutdated"],
+                "original_diff_hunk": thread_comments[0]["diffHunk"],
+                "comments": [
+                    {
+                        **describe_author(comment),
+                        "body": comment["body"],
+                        "created_at": comment["createdAt"],
+                        "url": comment["url"],
+                    }
+                    for comment in thread_comments
+                ],
+            }
+        )
+    review_summaries = [
+        {
+            **describe_author(review),
+            "state": review["state"],
+            "body": review["body"],
+            "submitted_at": review["submittedAt"],
+            "url": review["url"],
+        }
+        for review in fetch_all_connection_nodes(pull_request_location, "reviews", REVIEW_FIELDS)
+        if review["body"].strip()
+    ]
+    conversation_comments = [
+        {
+            **describe_author(comment),
+            "body": comment["body"],
+            "created_at": comment["createdAt"],
+            "url": comment["url"],
+        }
+        for comment in fetch_all_connection_nodes(
+            pull_request_location, "comments", CONVERSATION_COMMENT_FIELDS
+        )
+    ]
+    return {
+        "review_threads": review_threads,
+        "review_summaries": review_summaries,
+        "conversation_comments": conversation_comments,
+    }
 
 
 def split_diff_into_file_sections(diff_text: str) -> list[str]:
@@ -200,8 +333,11 @@ def main() -> None:
     )
     metadata_path = output_directory / "metadata.json"
     review_diff_path = output_directory / "review.diff"
+    discussion_path = output_directory / "discussion.json"
     metadata_path.write_text(metadata_json)
     review_diff_path.write_text("".join(review_sections))
+    discussion = fetch_discussion(url_match.groupdict())
+    discussion_path.write_text(json.dumps(discussion, indent=2))
 
     json.dump(
         {
@@ -215,6 +351,13 @@ def main() -> None:
             "review_diff_path": str(review_diff_path),
             "reviewed_file_count": len(review_sections),
             "excluded_files": excluded_paths,
+            "discussion_path": str(discussion_path),
+            "review_thread_count": len(discussion["review_threads"]),
+            "unresolved_review_thread_count": sum(
+                not thread["is_resolved"] for thread in discussion["review_threads"]
+            ),
+            "review_summary_count": len(discussion["review_summaries"]),
+            "conversation_comment_count": len(discussion["conversation_comments"]),
         },
         sys.stdout,
         indent=2,
