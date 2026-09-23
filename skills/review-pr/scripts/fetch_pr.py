@@ -50,6 +50,11 @@ PULL_REQUEST_URL_PATTERN = re.compile(
     r"^https://github\.com/(?P<owner>[^/]+)/(?P<repository>[^/]+)/pull/(?P<number>\d+)(?:[/?#].*)?$"
 )
 
+JIRA_TICKET_KEY = r"[A-Z][A-Z0-9]+-\d+"
+BRANCH_JIRA_TICKET_KEY_PATTERN = re.compile(rf"^(?:[^/]+/)*({JIRA_TICKET_KEY})(?![A-Za-z0-9])")
+TITLE_JIRA_TICKET_KEY_PATTERN = re.compile(rf"^\[?({JIRA_TICKET_KEY})(?![A-Za-z0-9])")
+JIRA_BROWSE_LINK_PATTERN = re.compile(rf"/browse/({JIRA_TICKET_KEY})(?![A-Za-z0-9])")
+
 PULL_REQUEST_METADATA_FIELDS = (
     "url,title,body,author,baseRefName,headRefName,additions,deletions,files,commits"
 )
@@ -222,6 +227,19 @@ def fetch_discussion(pull_request_location: dict[str, str], pull_request_author:
     }
 
 
+def find_jira_ticket_keys(metadata: dict) -> list[str]:
+    ticket_keys = []
+    for prefix_pattern, text in (
+        (BRANCH_JIRA_TICKET_KEY_PATTERN, metadata["headRefName"]),
+        (TITLE_JIRA_TICKET_KEY_PATTERN, metadata["title"]),
+    ):
+        prefix_match = prefix_pattern.match(text)
+        if prefix_match:
+            ticket_keys.append(prefix_match.group(1))
+    ticket_keys += JIRA_BROWSE_LINK_PATTERN.findall(f"{metadata['title']}\n{metadata['body']}")
+    return list(dict.fromkeys(ticket_keys))
+
+
 def split_diff_into_file_sections(diff_text: str) -> list[str]:
     return [section for section in re.split(r"(?m)^(?=diff --git )", diff_text) if section]
 
@@ -362,6 +380,7 @@ def main() -> None:
             "review_diff_path": str(review_diff_path),
             "reviewed_file_count": len(review_sections),
             "excluded_files": excluded_paths,
+            "jira_ticket_keys": find_jira_ticket_keys(metadata),
             "discussion_path": str(discussion_path),
             "review_thread_count": len(discussion["review_threads"]),
             "unresolved_review_thread_count": sum(

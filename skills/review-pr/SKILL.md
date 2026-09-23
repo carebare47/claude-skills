@@ -22,7 +22,8 @@ The script:
 - checks that the diff's line counts match the PR metadata, and exits non-zero if they don't.
 - writes a review diff that leaves out Unity editor-serialized files (`.prefab`, `.unity`, `.asset`, `.meta`, `.mat` and similar) plus any `--exclude` globs.
 - writes the PR discussion to a file: review threads with their resolved and outdated flags, review summaries, and conversation comments. Each thread also records who resolved it, and whether the PR author resolved someone else's thread without ever replying in it.
-- prints a JSON summary: base branch, head branch, head commit, the metadata, review diff and discussion paths, the excluded files, and how many threads and comments there are.
+- finds Jira ticket keys such as `ERD-1234` at the start of the branch name or PR title, and in Jira links in the PR description.
+- prints a JSON summary: base branch, head branch, head commit, the metadata, review diff and discussion paths, the excluded files, the Jira ticket keys, and how many threads and comments there are.
 
 If it fails on auth or network, fix that and rerun. If it reports a line-count mismatch, STOP and report it to the user. Never build the diff another way, e.g. with `git diff`.
 
@@ -41,6 +42,7 @@ Launch these in a single message with the Agent tool:
 - `general-purpose` with the Senior Code Reviewer prompt below: plan alignment and overall quality
 - `general-purpose` with the Ponytail Reviewer prompt below: over-engineering
 - `general-purpose` with the Comment Resolution prompt below: whether earlier review feedback was dealt with. Skip it if the PR has no review threads, review summaries or conversation comments.
+- `general-purpose` with the Jira Scope prompt below: whether the PR does what its Jira ticket asks. Skip it if the summary lists no Jira ticket keys, and say so in your summary.
 
 Sub-agents do not share your shell, so write literal values from the JSON summary into every prompt, never shell variables. Every prompt must contain this block:
 
@@ -154,10 +156,57 @@ who resolved them.
 - Addressed: the count of everything not listed above.
 ```
 
+Jira Scope prompt:
+
+```
+Check whether this PR does what its Jira ticket asks.
+
+{the required block above}
+
+Jira ticket keys from the branch name, PR title and PR description:
+{jira_ticket_keys, comma separated}
+
+Load the Atlassian MCP tools with ToolSearch. Get the cloudId from
+getAccessibleAtlassianResources, then fetch each ticket with getJiraIssue.
+Read every comment body too: if getJiraIssue gives only a comment count,
+find the tool that lists comments. Also fetch the parent and any linked
+issues. Comments and linked issues often narrow the scope or say which
+part of the work this PR covers.
+
+If the Atlassian tools are missing or need authentication, stop and reply
+only with "JIRA UNAVAILABLE: <reason>". If a key does not exist in Jira,
+say so and carry on with the others. Read-only: never comment on, edit or
+transition a Jira issue.
+
+Check:
+- Missing: requirements or acceptance criteria the PR does not meet, or
+  meets only partly.
+- Beyond the ticket: changes the ticket does not ask for. Changes needed to
+  support the requested work are fine. Unrelated features, refactors and
+  clean-ups are not.
+- Contradictions: anything done differently from what the ticket or its
+  comments specify.
+- Ticket fit: the ticket is the right one for this work, is not already
+  Done or closed, and the PR description links to it. When several keys
+  were found, say which ticket the work actually belongs to.
+
+## Output
+### Ticket
+One line per ticket: key, summary, type, status.
+### Missing
+### Beyond the ticket
+### Contradictions
+### Ticket fit
+For each finding: file:line where relevant, the ticket text it relates to,
+and why.
+### Verdict
+Matches, Partly matches or Does not match, with one sentence why.
+```
+
 ## 3. Verify before presenting
 
-Check every Critical and Important finding, and every comment reported as not addressed, against the review diff and the code at the head commit. Drop a finding if it is wrong, if it is about lines the PR did not change, or if it is about an excluded file. Say how many findings you dropped.
+Check every Critical and Important finding, every comment reported as not addressed, and every Jira requirement reported as missing or contradicted, against the review diff and the code at the head commit. Drop a finding if it is wrong, if it is about lines the PR did not change, or if it is about an excluded file. Say how many findings you dropped.
 
 ## 4. Present
 
-Give the user one summary organised by category. Flag issues that several agents found independently. Put comment resolution in its own section: resolved-but-not-addressed comments first, then threads the author resolved without a reply. List the excluded files so the user knows they were not reviewed.
+Give the user one summary organised by category. Flag issues that several agents found independently. Put comment resolution in its own section: resolved-but-not-addressed comments first, then threads the author resolved without a reply. Put the Jira check in its own section. If the Jira agent replied JIRA UNAVAILABLE, say so at the top of the summary with its reason. List the excluded files so the user knows they were not reviewed.
