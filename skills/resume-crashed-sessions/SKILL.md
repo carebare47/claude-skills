@@ -8,7 +8,7 @@ description: Use when Claude Code crashed or was killed and you need to find whi
 Run the scanner and show the user the table:
 
 ```bash
-python3 ~/.claude/skills/resume-crashed-sessions/scan.py
+python3 "${CLAUDE_SKILL_DIR}/scan.py"
 ```
 
 It prints the most recent sessions across every project dir, newest first, each with

@@ -34,24 +34,29 @@ rows = []
 for transcript in glob.glob(os.path.join(PROJECTS_DIR, "*", "[0-9a-f]*-*.jsonl")):
     working_dir = None
     last_said = None
-    with open(transcript) as handle:
-        for line in handle:
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if parsed.get("cwd"):
-                working_dir = parsed["cwd"]
-            if parsed.get("type") == "user":
-                text = last_user_text(parsed)
-                if text:
-                    last_said = text
+    with open(transcript, encoding="utf-8") as handle:
+        lines = handle.readlines()
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError as decode_error:
+            # A crash can cut the final line off mid-write.
+            if line_number == len(lines):
+                break
+            raise ValueError(f"{transcript}:{line_number} is not valid JSON") from decode_error
+        if parsed.get("cwd"):
+            working_dir = parsed["cwd"]
+        if parsed.get("type") == "user":
+            text = last_user_text(parsed)
+            if text:
+                last_said = text
     modified = datetime.datetime.fromtimestamp(os.path.getmtime(transcript))
-    session_id = os.path.basename(transcript).split("-")[0]
-    rows.append((modified, working_dir or "?", session_id, (last_said or "").strip().replace("\n", " ")[:80]))
+    session_id = os.path.splitext(os.path.basename(transcript))[0]
+    rows.append((modified, working_dir, session_id, (last_said or "").strip().replace("\n", " ")[:80]))
 
 rows.sort(reverse=True)
 for modified, working_dir, session_id, last_said in rows[:session_count]:
-    print(f"{modified:%m-%d %H:%M}  {working_dir}")
-    print(f"          resume: cd {working_dir} && claude --resume {session_id}")
+    change_directory = f"cd {working_dir} && " if working_dir else ""
+    print(f"{modified:%m-%d %H:%M}  {working_dir or 'working directory unknown'}")
+    print(f"          resume: {change_directory}claude --resume {session_id}")
     print(f"          last:   {last_said!r}\n")
